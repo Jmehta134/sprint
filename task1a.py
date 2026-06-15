@@ -35,19 +35,36 @@ def control_loop(sensors):
     if not hasattr(control_loop, "prev_error"):
         control_loop.prev_error = 0.0
         control_loop.integral = 0.0
-
+        # Start by assuming a White line on a Black background
+        control_loop.follow_white_line = True
+    
+    # Checking and Inverting sensor data only if the background is Black
+    threshold = 0.2
+    
+    left_ext = sensors['left_corner']
+    right_ext = sensors['right_corner']
+    if control_loop.follow_white_line:
+        # We expect a White background. If both outer sensors suddenly see White-> follow black line
+        if left_ext < threshold and right_ext < threshold:
+            control_loop.follow_white_line = True
+    else:
+        # We expect a Black background. If both outer sensors suddenly see Black-> follow white line
+        if left_ext > threshold and right_ext > threshold:
+            control_loop.follow_white_line = False
+    
     # ----- 1. Configuration & Tuning Parameters -----
     base_speed = 2
-    Kp = 1.5  
+    Kp = 0.8  
     Ki = 0.0
     Kd = 0.0   
+
     
     weights = {
-        'left_corner': 2.0,
-        'left': 1.3,
+        'left_corner': -2.0,
+        'left': -1.3,
         'middle': 0.0,
-        'right': -1.3,
-        'right_corner': -2.0
+        'right': 1.3,
+        'right_corner': 2.0
     }
 
     # ----- 2. Calculate Line Position Error -----
@@ -55,19 +72,26 @@ def control_loop(sensors):
     denominator = 0.0
     
     for key, value in sensors.items():
-        # Subtracting the reading from the max value inverts the data.
-        # The lowest sensor reading becomes the highest number (the "mass").
-        inverted_val = 1 - value
+        if control_loop.follow_white_line:
+            # Black background = ~0.0, White line = ~1.0
+            # Keep as is; the white line is already the highest value
+            sensors[key] = value 
+        else:
+            # White background = ~1.0, Black line = ~0.0
+            # Invert so the black line becomes the highest value
+            sensors[key] = 1.0 - value
         
-        numerator += weights[key] * inverted_val
-        denominator += inverted_val
+        numerator += weights[key] * sensors[key]
+        denominator += sensors[key]
 
     # Ensure we actually have a distinct line to follow (denominator isn't effectively 0)
     if denominator > 0.1: 
         error = numerator / denominator
     else:
         # Line is completely lost we continue..
-            error = 0.0
+            # error = 0.0
+            exit()
+    print(error)
 
     # ----- 3. PID Math -----
     P = Kp * error
