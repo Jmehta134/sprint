@@ -44,22 +44,20 @@ def control_loop(sensors):
     left_ext = sensors['left_corner']
     right_ext = sensors['right_corner']
     mid = sensors['middle']
+    
+    if left_ext < 0.4 and right_ext < 0.4:
+        control_loop.follow_white_line = True
+        if mid < 0.4 :
+            return 2, 2
 
-
-    if control_loop.follow_white_line:
-        # We expect a White background. If both outer sensors suddenly see White-> follow black line
-        if left_ext < threshold and right_ext < threshold:
-            control_loop.follow_white_line = True
-            if mid < threshold:# Rotating in prev error dir
-                return (control_loop.prev_error > 0) - (control_loop.prev_error < 0), (control_loop.prev_error < 0) - (control_loop.prev_error > 0)
-    else:
-        # We expect a Black background. If both outer sensors suddenly see Black-> follow white line
-        if left_ext > threshold and right_ext > threshold:
-            control_loop.follow_white_line = False
-            if mid > threshold:# Rotating in prev error dir
-                return (control_loop.prev_error > 0) - (control_loop.prev_error < 0), (control_loop.prev_error < 0) - (control_loop.prev_error > 0)
+    # We expect a White background. If both outer sensors suddenly see Black-> follow white line
+    if left_ext > 0.6 and right_ext > 0.6:
+        control_loop.follow_white_line = False
+        if mid > 0.6 :
+            return 2, 2
 
     
+
     # ----- 1. Configuration & Tuning Parameters -----
     base_speed = 2
     Kp = 1.5  
@@ -78,23 +76,22 @@ def control_loop(sensors):
     # ----- 2. Calculate Line Position Error -----
     numerator = 0.0
     denominator = 0.0
-    
+        
     for key, value in sensors.items():
         if control_loop.follow_white_line:
             # Black background = ~0.0, White line = ~1.0
             # Keep as is; the white line is already the highest value
             sensors[key] = value 
-            print('whiteline')
         else:
             # White background = ~1.0, Black line = ~0.0
             # Invert so the black line becomes the highest value
             sensors[key] = 1.0 - value
-            print('blackline')
         
         numerator += weights[key] * sensors[key]
         denominator += sensors[key]
-    
+
     error = numerator / denominator
+
     # ----- 3. PID Math -----
     P = Kp * error
     
