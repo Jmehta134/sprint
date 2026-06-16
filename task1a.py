@@ -37,6 +37,7 @@ def control_loop(sensors):
         control_loop.integral = 0.0
         # Start by assuming a White line on a Black background
         control_loop.follow_white_line = True
+        control_loop.lost_time = None
     
     # Checking and Inverting sensor data only if the background is Black
     threshold = 0.2
@@ -44,19 +45,25 @@ def control_loop(sensors):
     left_ext = sensors['left_corner']
     right_ext = sensors['right_corner']
     mid = sensors['middle']
-    
+
     if left_ext < 0.4 and right_ext < 0.4:
         control_loop.follow_white_line = True
-        if mid < 0.4 :
-            return 2, 2
+        if mid < 0.4:
+            if control_loop.lost_time == None :
+                control_loop.lost_time = time.time()
+            # Stopping after 3 second of lost state for the last marker stop.
+            return (2, 2) if time.time() - control_loop.lost_time <= 3 else (0, 0)
 
     # We expect a White background. If both outer sensors suddenly see Black-> follow white line
     if left_ext > 0.6 and right_ext > 0.6:
         control_loop.follow_white_line = False
-        if mid > 0.6 :
-            return 2, 2
+        if mid > 0.6:
+            if control_loop.lost_time == None :
+                control_loop.lost_time = time.time()
+            # Stopping after 3 second of lost state for the last marker stop.
+            return (2, 2) if time.time() - control_loop.lost_time <= 3 else (0, 0)
 
-    
+    control_loop.lost_time = None
 
     # ----- 1. Configuration & Tuning Parameters -----
     base_speed = 2
@@ -123,7 +130,7 @@ def main():
             if sensors is  None:
                 time.sleep(0.01)
                 continue
-
+            
             left, right = control_loop (sensors)
             client.send_motor_command(left, right)
 
