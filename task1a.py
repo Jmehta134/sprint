@@ -43,18 +43,26 @@ def control_loop(sensors):
     
     left_ext = sensors['left_corner']
     right_ext = sensors['right_corner']
+    mid = sensors['middle']
+
+
     if control_loop.follow_white_line:
         # We expect a White background. If both outer sensors suddenly see White-> follow black line
         if left_ext < threshold and right_ext < threshold:
             control_loop.follow_white_line = True
+            if mid < threshold:# Rotating in prev error dir
+                return (control_loop.prev_error > 0) - (control_loop.prev_error < 0), (control_loop.prev_error < 0) - (control_loop.prev_error > 0)
     else:
         # We expect a Black background. If both outer sensors suddenly see Black-> follow white line
         if left_ext > threshold and right_ext > threshold:
             control_loop.follow_white_line = False
+            if mid > threshold:# Rotating in prev error dir
+                return (control_loop.prev_error > 0) - (control_loop.prev_error < 0), (control_loop.prev_error < 0) - (control_loop.prev_error > 0)
+
     
     # ----- 1. Configuration & Tuning Parameters -----
     base_speed = 2
-    Kp = 0.8  
+    Kp = 1.5  
     Ki = 0.0
     Kd = 0.0   
 
@@ -76,23 +84,17 @@ def control_loop(sensors):
             # Black background = ~0.0, White line = ~1.0
             # Keep as is; the white line is already the highest value
             sensors[key] = value 
+            print('whiteline')
         else:
             # White background = ~1.0, Black line = ~0.0
             # Invert so the black line becomes the highest value
             sensors[key] = 1.0 - value
+            print('blackline')
         
         numerator += weights[key] * sensors[key]
         denominator += sensors[key]
-
-    # Ensure we actually have a distinct line to follow (denominator isn't effectively 0)
-    if denominator > 0.1: 
-        error = numerator / denominator
-    else:
-        # Line is completely lost we continue..
-            # error = 0.0
-            exit()
-    print(error)
-
+    
+    error = numerator / denominator
     # ----- 3. PID Math -----
     P = Kp * error
     
@@ -116,21 +118,19 @@ def main():
     client.connect()
     print("Connected to bridge_task1a. Running... (Ctrl+C to stop)")
 
-    last_sensors = None
     try:
         while True:
             # Pull the freshest sensor packet; reuse the last one between packets.
             sensors = client.receive_sensor_data()
-            if sensors is not None:
-                last_sensors = sensors
-            if last_sensors is None:
-                time.sleep(0.02)
+
+            if sensors is  None:
+                time.sleep(0.01)
                 continue
 
-            left, right = control_loop (last_sensors)
+            left, right = control_loop (sensors)
             client.send_motor_command(left, right)
 
-            time.sleep(0.05)   # ~20 Hz control loop
+            # time.sleep(0.05)   # ~20 Hz control loop
     except KeyboardInterrupt:
         print("\nStopping...")
     finally:
