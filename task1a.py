@@ -38,38 +38,23 @@ def control_loop(sensors):
         # Start by assuming a White line on a Black background
         control_loop.follow_white_line = True
         control_loop.lost_time = None
-    
-    # Checking and Inverting sensor data only if the background is Black
-    threshold = 0.2
-    
+        
     left_ext = sensors['left_corner']
     right_ext = sensors['right_corner']
-    mid = sensors['middle']
 
-    if left_ext < 0.4 and right_ext < 0.4:
+    if left_ext < 0.3 and right_ext < 0.3:
         control_loop.follow_white_line = True
-        if mid < 0.4:
-            if control_loop.lost_time == None :
-                control_loop.lost_time = time.time()
-            # Stopping after 3 second of lost state for the last marker stop.
-            return (2, 2) if time.time() - control_loop.lost_time <= 3 else (0, 0)
 
+        
     # We expect a White background. If both outer sensors suddenly see Black-> follow white line
     if left_ext > 0.6 and right_ext > 0.6:
         control_loop.follow_white_line = False
-        if mid > 0.6:
-            if control_loop.lost_time == None :
-                control_loop.lost_time = time.time()
-            # Stopping after 3 second of lost state for the last marker stop.
-            return (2, 2) if time.time() - control_loop.lost_time <= 3 else (0, 0)
-
-    control_loop.lost_time = None
-
+        
     # ----- 1. Configuration & Tuning Parameters -----
     base_speed = 2
-    Kp = 1.5  
+    Kp = 1.5
     Ki = 0.0
-    Kd = 0.0   
+    Kd = 0.4  
 
     
     weights = {
@@ -86,19 +71,16 @@ def control_loop(sensors):
         
     for key, value in sensors.items():
         if control_loop.follow_white_line:
-            # Black background = ~0.0, White line = ~1.0
-            # Keep as is; the white line is already the highest value
             sensors[key] = value 
         else:
-            # White background = ~1.0, Black line = ~0.0
-            # Invert so the black line becomes the highest value
             sensors[key] = 1.0 - value
         
         numerator += weights[key] * sensors[key]
         denominator += sensors[key]
 
+    # calculate error         
     error = numerator / denominator
-
+    
     # ----- 3. PID Math -----
     P = Kp * error
     
@@ -110,9 +92,30 @@ def control_loop(sensors):
     turn = P + I + D
     control_loop.prev_error = error
 
-    # ----- 4. Apply to Wheels -----
-    left_speed = base_speed + turn
-    right_speed = base_speed - turn
+    # ----- 4. Adaptive Speed Logic -----
+    MAX_SPEED = 10.0   # Top speed on straightaways
+    MIN_CORNER_SPEED = 2.0  # Slowest base speed allowed so it doesn't stall in turns
+    
+    K_brake_error = 10.0 # How hard to brake based on current error
+    K_brake_diff = 5.0  # How hard to brake when approaching a turn quickly (D-term)
+
+    # Calculate adaptive speed
+    adaptive_speed = MAX_SPEED - (K_brake_error * abs(error)) - (K_brake_diff * abs(D))
+    
+    # Don't let the base speed drop below your safe cornering speed
+    adaptive_speed = max(MIN_CORNER_SPEED, adaptive_speed)
+
+    # ----- 5. Apply to Wheels with Safety Clamps -----
+    # Using a slightly negative minimum allows the inner wheel to reverse for tight pivots
+    MOTOR_LIMIT_MAX = 12.0
+    MOTOR_LIMIT_MIN = -2.0 
+    
+    left_speed = adaptive_speed + turn
+    right_speed = adaptive_speed - turn
+
+    # Clamp the final outputs to prevent the simulator from silently freezing!
+    left_speed = max(MOTOR_LIMIT_MIN, min(left_speed, MOTOR_LIMIT_MAX))
+    right_speed = max(MOTOR_LIMIT_MIN, min(right_speed, MOTOR_LIMIT_MAX))
 
     return left_speed, right_speed
 
