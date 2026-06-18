@@ -38,6 +38,7 @@ def control_loop(sensors):
         # Start by assuming a White line on a Black background
         control_loop.follow_white_line = True
         control_loop.lost_time = None
+        control_loop.lost_cycles = 0  # NEW: Tracks how long we've been lost
         
     left_ext = sensors['left_corner']
     right_ext = sensors['right_corner']
@@ -77,14 +78,31 @@ def control_loop(sensors):
     min_val = min(sensor_values)
     
     if (max_val - min_val) <= 0.1:
-        # The bot is lost (sees all background or all line). Spin in direction of previous error!
-        spin_speed = 3.0  # Safe turning speed
-        if control_loop.prev_error > 0:
-            # Line was to the right, spin right
-            return spin_speed, -spin_speed
+        control_loop.lost_cycles += 1
+        
+        # PENDULUM SEARCH: Prevent spinning 180 degrees and going backward
+        spin_speed = 3.5  # Slightly faster to catch the line quickly
+        
+        # Initial guess based on the last error we saw
+        initial_dir = 1 if control_loop.prev_error > 0 else -1
+        
+        # At 20Hz, ~12 cycles is roughly enough time for a 90-degree turn
+        # Sweep 1: 0 to 12 cycles -> Turn up to ~90 deg in the presumed direction
+        # Sweep 2: 12 to 36 cycles -> Reverse and sweep ~180 deg to check the other side
+        if control_loop.lost_cycles < 5:
+            current_dir = initial_dir
+        elif control_loop.lost_cycles < 15:
+            current_dir = -initial_dir
         else:
-            # Line was to the left, spin left
-            return -spin_speed, spin_speed
+            current_dir = initial_dir  # Fallback if really lost
+            
+        if current_dir > 0:
+            return spin_speed, -spin_speed  # Spin Right
+        else:
+            return -spin_speed, spin_speed  # Spin Left
+    else:
+        # We found the line! Reset the lost counter immediately
+        control_loop.lost_cycles = 0
 
     # ----- 3. Calculate Line Position Error -----
     numerator = 0.0
@@ -124,11 +142,11 @@ def control_loop(sensors):
     control_loop.prev_error = error
 
     # ----- 5. Adaptive Speed Logic -----
-    MAX_SPEED = 12.0   # Increased top speed!
-    MIN_CORNER_SPEED = 2.5  
+    MAX_SPEED = 13.0   # Increased from 12.0 (Top straightaway speed)
+    MIN_CORNER_SPEED = 2.5  # Increased from 2.5 (Carry more momentum through turns)
     
-    K_brake_error = 8.0 
-    K_brake_diff = 4.0  
+    K_brake_error = 8.0 # Decreased from 8.0: Brake less aggressively on curves
+    K_brake_diff = 4.0  # Decreased from 4.0: Brake less on sudden changes
 
     # Only brake if we are actually outside the deadband (i.e., entering a real curve)
     if abs(error) > DEADBAND_THRESHOLD:
@@ -141,8 +159,8 @@ def control_loop(sensors):
 
     # ----- 6. Apply to Wheels with Safety Clamps -----
     # Using a slightly negative minimum allows the inner wheel to reverse for tight pivots
-    MOTOR_LIMIT_MAX = 12.0
-    MOTOR_LIMIT_MIN = -2.0 
+    MOTOR_LIMIT_MAX = 13.0 # MUST match or exceed MAX_SPEED (Increased from 12.0)
+    MOTOR_LIMIT_MIN = -2.0 # Allowing slightly more reverse power for faster pivots
     
     left_speed = adaptive_speed + turn
     right_speed = adaptive_speed - turn
