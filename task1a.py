@@ -35,10 +35,11 @@ def control_loop(sensors):
         control_loop.prev_error = 0.0
         control_loop.integral = 0.0
         control_loop.lpf_error = 0.0  # Added for Low-Pass Filter
+        control_loop.prev_turn = 0.0  # NEW: Tracks previous turn for Slew Rate Limiting
         # Start by assuming a White line on a Black background
         control_loop.follow_white_line = True
         control_loop.lost_time = None
-        control_loop.lost_cycles = 0  # NEW: Tracks how long we've been lost
+        control_loop.lost_cycles = 0  # Tracks how long we've been lost
         
     left_ext = sensors['left_corner']
     right_ext = sensors['right_corner']
@@ -124,7 +125,7 @@ def control_loop(sensors):
     error = (alpha * raw_error) + ((1.0 - alpha) * control_loop.lpf_error)
     control_loop.lpf_error = error
 
-    # ----- 4. PID Math with Deadband -----
+    # ----- 4. PID Math with Deadband & Slew Rate Limiter -----
     # DEADBAND: If the error is very small, we are essentially on a straight. 
     # Force error to 0 to prevent micro-oscillations (wobbles).
     DEADBAND_THRESHOLD = 0.05
@@ -138,7 +139,27 @@ def control_loop(sensors):
     
     D = Kd * (error - control_loop.prev_error)
     
-    turn = P + I + D
+    # Calculate raw target turn
+    target_turn = P + I + D
+    
+    # -- NEW: SLEW RATE LIMITER --
+    # MAX_TURN_CHANGE limits how much the steering can change in a single tick.
+    # At ~20Hz, a limit of 1.5 means the turn value can't jump by more than 1.5 per tick.
+    # Tuning: Lowering this makes it smoother but more sluggish. Raising it makes it more responsive but jerkier.
+    MAX_TURN_CHANGE = 0.8 
+    
+    turn_diff = target_turn - control_loop.prev_turn
+    
+    # Clamp the difference to limit the rate of change
+    if turn_diff > MAX_TURN_CHANGE:
+        turn = control_loop.prev_turn + MAX_TURN_CHANGE
+    elif turn_diff < -MAX_TURN_CHANGE:
+        turn = control_loop.prev_turn - MAX_TURN_CHANGE
+    else:
+        turn = target_turn
+        
+    # Update state history for the next cycle
+    control_loop.prev_turn = turn
     control_loop.prev_error = error
 
     # ----- 5. Adaptive Speed Logic -----
