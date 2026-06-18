@@ -27,7 +27,6 @@ from connector_task1a import CoppeliaClient
 # Each value is in [0.0, 1.0]; a higher value means the line is detected.
 SENSOR_ORDER = ['left_corner', 'left', 'middle', 'right', 'right_corner']
 
-
 def control_loop(sensors):
     """Return (left_speed, right_speed) to track the lowest sensor reading."""
     
@@ -35,6 +34,7 @@ def control_loop(sensors):
     if not hasattr(control_loop, "prev_error"):
         control_loop.prev_error = 0.0
         control_loop.integral = 0.0
+        control_loop.lpf_error = 0.0  # Added for Low-Pass Filter
         # Start by assuming a White line on a Black background
         control_loop.follow_white_line = True
         control_loop.lost_time = None
@@ -44,18 +44,15 @@ def control_loop(sensors):
 
     if left_ext < 0.3 and right_ext < 0.3:
         control_loop.follow_white_line = True
-
         
     # We expect a White background. If both outer sensors suddenly see Black-> follow white line
     if left_ext > 0.6 and right_ext > 0.6:
         control_loop.follow_white_line = False
         
     # ----- 1. Configuration & Tuning Parameters -----
-    base_speed = 2
-    Kp = 1.5
+    Kp = 1.2  # Fixed P: Lower this if it still oscillates wildly
     Ki = 0.0
-    Kd = 0.4  
-
+    Kd = 0.5  # Fixed D: Provides damping. If wobbles are fast/jittery, lower this.
     
     weights = {
         'left_corner': -2.0,
@@ -65,23 +62,57 @@ def control_loop(sensors):
         'right_corner': 2.0
     }
 
-    # ----- 2. Calculate Line Position Error -----
+    # ----- 2. Process Sensors & Check "Lost" Condition -----
+    processed_sensors = {}
+    for key in SENSOR_ORDER:
+        value = sensors[key]
+        if control_loop.follow_white_line:
+            processed_sensors[key] = value 
+        else:
+            processed_sensors[key] = 1.0 - value
+
+    # "Lost" Logic: Check if all processed sensor values are within 10% (0.1) of each other
+    sensor_values = list(processed_sensors.values())
+    max_val = max(sensor_values)
+    min_val = min(sensor_values)
+    
+    if (max_val - min_val) <= 0.1:
+        # The bot is lost (sees all background or all line). Spin in direction of previous error!
+        spin_speed = 3.0  # Safe turning speed
+        if control_loop.prev_error > 0:
+            # Line was to the right, spin right
+            return spin_speed, -spin_speed
+        else:
+            # Line was to the left, spin left
+            return -spin_speed, spin_speed
+
+    # ----- 3. Calculate Line Position Error -----
     numerator = 0.0
     denominator = 0.0
         
-    for key, value in sensors.items():
-        if control_loop.follow_white_line:
-            sensors[key] = value 
-        else:
-            sensors[key] = 1.0 - value
-        
-        numerator += weights[key] * sensors[key]
-        denominator += sensors[key]
+    for key in SENSOR_ORDER:
+        numerator += weights[key] * processed_sensors[key]
+        denominator += processed_sensors[key]
 
-    # calculate error         
-    error = numerator / denominator
+    # ZeroDivisionError Prevention
+    if denominator > 1e-6:
+        raw_error = numerator / denominator
+    else:
+        raw_error = control_loop.prev_error  # Fallback to previous error if denominator is 0
     
-    # ----- 3. PID Math -----
+    # Low-Pass Filter (LPF) applied to the error to smooth sudden spikes
+    # Lowered alpha to 0.4 for heavier smoothing of sensor noise
+    alpha = 0.4  
+    error = (alpha * raw_error) + ((1.0 - alpha) * control_loop.lpf_error)
+    control_loop.lpf_error = error
+
+    # ----- 4. PID Math with Deadband -----
+    # DEADBAND: If the error is very small, we are essentially on a straight. 
+    # Force error to 0 to prevent micro-oscillations (wobbles).
+    DEADBAND_THRESHOLD = 0.05
+    if abs(error) < DEADBAND_THRESHOLD:
+        error = 0.0
+
     P = Kp * error
     
     control_loop.integral += error
@@ -92,20 +123,23 @@ def control_loop(sensors):
     turn = P + I + D
     control_loop.prev_error = error
 
-    # ----- 4. Adaptive Speed Logic -----
-    MAX_SPEED = 10.0   # Top speed on straightaways
-    MIN_CORNER_SPEED = 2.0  # Slowest base speed allowed so it doesn't stall in turns
+    # ----- 5. Adaptive Speed Logic -----
+    MAX_SPEED = 12.0   # Increased top speed!
+    MIN_CORNER_SPEED = 2.5  
     
-    K_brake_error = 10.0 # How hard to brake based on current error
-    K_brake_diff = 5.0  # How hard to brake when approaching a turn quickly (D-term)
+    K_brake_error = 8.0 
+    K_brake_diff = 4.0  
 
-    # Calculate adaptive speed
-    adaptive_speed = MAX_SPEED - (K_brake_error * abs(error)) - (K_brake_diff * abs(D))
+    # Only brake if we are actually outside the deadband (i.e., entering a real curve)
+    if abs(error) > DEADBAND_THRESHOLD:
+        adaptive_speed = MAX_SPEED - (K_brake_error * abs(error)) - (K_brake_diff * abs(D))
+    else:
+        adaptive_speed = MAX_SPEED # Full speed ahead on straights!
     
     # Don't let the base speed drop below your safe cornering speed
     adaptive_speed = max(MIN_CORNER_SPEED, adaptive_speed)
 
-    # ----- 5. Apply to Wheels with Safety Clamps -----
+    # ----- 6. Apply to Wheels with Safety Clamps -----
     # Using a slightly negative minimum allows the inner wheel to reverse for tight pivots
     MOTOR_LIMIT_MAX = 12.0
     MOTOR_LIMIT_MIN = -2.0 
@@ -118,7 +152,6 @@ def control_loop(sensors):
     right_speed = max(MOTOR_LIMIT_MIN, min(right_speed, MOTOR_LIMIT_MAX))
 
     return left_speed, right_speed
-
 
 def main():
     client = CoppeliaClient(host="127.0.0.1", port=50002)
