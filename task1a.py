@@ -16,7 +16,7 @@ WHAT YOU IMPLEMENT
   Don't Edit this file except control_loop().
   You can add helper functions if you like.
 
-Team ID: [ XXX ]
+Team ID: [ 782 ]
 """
 
 import time
@@ -34,11 +34,10 @@ def control_loop(sensors):
     if not hasattr(control_loop, "prev_error"):
         control_loop.prev_error = 0.0
         control_loop.integral = 0.0
-        control_loop.lpf_error = 0.0  # Added for Low-Pass Filter
-        # Start by assuming a White line on a Black background
+        control_loop.lpf_error = 0.0  
         control_loop.follow_white_line = True
         control_loop.lost_time = None
-        control_loop.lost_cycles = 0  # NEW: Tracks how long we've been lost
+        control_loop.lost_cycles = 0  
         
     left_ext = sensors['left_corner']
     right_ext = sensors['right_corner']
@@ -46,14 +45,13 @@ def control_loop(sensors):
     if left_ext < 0.3 and right_ext < 0.3:
         control_loop.follow_white_line = True
         
-    # We expect a White background. If both outer sensors suddenly see Black-> follow white line
     if left_ext > 0.6 and right_ext > 0.6:
         control_loop.follow_white_line = False
         
     # ----- 1. Configuration & Tuning Parameters -----
-    Kp = 1.2  # Fixed P: Lower this if it still oscillates wildly
+    Kp = 0.8  
     Ki = 0.0
-    Kd = 0.5  # Fixed D: Provides damping. If wobbles are fast/jittery, lower this.
+    Kd = 0.5  
     
     weights = {
         'left_corner': -2.0,
@@ -63,7 +61,7 @@ def control_loop(sensors):
         'right_corner': 2.0
     }
 
-    # ----- 2. Process Sensors & Check "Lost" Condition -----
+    # ----- 2. Process Sensors -----
     processed_sensors = {}
     for key in SENSOR_ORDER:
         value = sensors[key]
@@ -72,65 +70,54 @@ def control_loop(sensors):
         else:
             processed_sensors[key] = 1.0 - value
 
-    # "Lost" Logic: Check if all processed sensor values are within 10% (0.1) of each other
+    # ----- 3. "Lost" Logic & Error Calculation -----
     sensor_values = list(processed_sensors.values())
     max_val = max(sensor_values)
     min_val = min(sensor_values)
-    
+
     if (max_val - min_val) <= 0.1:
+        # --- LOST STATE ---
         control_loop.lost_cycles += 1
         
-        # PENDULUM SEARCH: Prevent spinning 180 degrees and going backward
-        spin_speed = 3.5  # Slightly faster to catch the line quickly
+        # 1. Determine direction based on the last known error.
+        # Since prev_error is updated at the end of every loop, it retains the 
+        # sign of the direction we were turning exactly when we lost the line.
+        direction = 1.0 if control_loop.prev_error >= 0 else -1.0
         
-        # Initial guess based on the last error we saw
-        initial_dir = 1 if control_loop.prev_error > 0 else -1
+        # 2. Assume a threshold error, continuously increasing.
+        # Start at 1.5 (stronger than the outer sensor weight of 1.0)
+        BASE_THRESHOLD = 1.5 
+        GROWTH_PER_CYCLE = 0.01  
         
-        # At 20Hz, ~12 cycles is roughly enough time for a 90-degree turn
-        # Sweep 1: 0 to 12 cycles -> Turn up to ~90 deg in the presumed direction
-        # Sweep 2: 12 to 36 cycles -> Reverse and sweep ~180 deg to check the other side
-        if control_loop.lost_cycles < 5:
-            current_dir = initial_dir
-        elif control_loop.lost_cycles < 15:
-            current_dir = -initial_dir
-        else:
-            current_dir = initial_dir  # Fallback if really lost
-            
-        if current_dir > 0:
-            return spin_speed, -spin_speed  # Spin Right
-        else:
-            return -spin_speed, spin_speed  # Spin Left
+        # Inject the growing error directly into the PID flow
+        error = direction * (BASE_THRESHOLD + (GROWTH_PER_CYCLE * control_loop.lost_cycles))
+        
+        # Keep the LPF synced so it doesn't violently snap when the line is found again
+        control_loop.lpf_error = error
+        
     else:
-        # We found the line! Reset the lost counter immediately
+        # --- FOUND STATE ---
         control_loop.lost_cycles = 0
-
-    # ----- 3. Calculate Line Position Error -----
-    numerator = 0.0
-    denominator = 0.0
         
-    for key in SENSOR_ORDER:
-        numerator += weights[key] * processed_sensors[key]
-        denominator += processed_sensors[key]
+        numerator = 0.0
+        denominator = 0.0
+            
+        for key in SENSOR_ORDER:
+            numerator += weights[key] * processed_sensors[key]
+            denominator += processed_sensors[key]
 
-    # ZeroDivisionError Prevention
-    if denominator > 1e-6:
-        raw_error = numerator / denominator
-    else:
-        raw_error = control_loop.prev_error  # Fallback to previous error if denominator is 0
-    
-    # Low-Pass Filter (LPF) applied to the error to smooth sudden spikes
-    # Lowered alpha to 0.4 for heavier smoothing of sensor noise
-    alpha = 0.4  
-    error = (alpha * raw_error) + ((1.0 - alpha) * control_loop.lpf_error)
-    control_loop.lpf_error = error
+        # ZeroDivisionError Prevention
+        if denominator > 1e-6:
+            raw_error = numerator / denominator
+        else:
+            raw_error = control_loop.prev_error  
+        
+        # Low-Pass Filter (LPF) applied to the error
+        alpha = 0.6  
+        error = (alpha * raw_error) + ((1.0 - alpha) * control_loop.lpf_error)
+        control_loop.lpf_error = error
 
-    # ----- 4. PID Math with Deadband -----
-    # DEADBAND: If the error is very small, we are essentially on a straight. 
-    # Force error to 0 to prevent micro-oscillations (wobbles).
-    DEADBAND_THRESHOLD = 0.05
-    if abs(error) < DEADBAND_THRESHOLD:
-        error = 0.0
-
+    # ----- 4. PID Math -----
     P = Kp * error
     
     control_loop.integral += error
@@ -142,30 +129,26 @@ def control_loop(sensors):
     control_loop.prev_error = error
 
     # ----- 5. Adaptive Speed Logic -----
-    MAX_SPEED = 13.0   # Increased from 12.0 (Top straightaway speed)
-    MIN_CORNER_SPEED = 2.5  # Increased from 2.5 (Carry more momentum through turns)
+    MAX_SPEED = 14.0   
+    MIN_CORNER_SPEED = 2.5  
     
-    K_brake_error = 8.0 # Decreased from 8.0: Brake less aggressively on curves
-    K_brake_diff = 4.0  # Decreased from 4.0: Brake less on sudden changes
-
-    # Only brake if we are actually outside the deadband (i.e., entering a real curve)
-    if abs(error) > DEADBAND_THRESHOLD:
-        adaptive_speed = MAX_SPEED - (K_brake_error * abs(error)) - (K_brake_diff * abs(D))
-    else:
-        adaptive_speed = MAX_SPEED # Full speed ahead on straights!
+    K_brake_error = 8.0 
+    K_brake_diff = 5.0  
+    
+    # Restored the adaptive speed calculation so it doesn't throw a reference error
+    adaptive_speed = MAX_SPEED - (K_brake_error * abs(error)) - (K_brake_diff * abs(D))
     
     # Don't let the base speed drop below your safe cornering speed
     adaptive_speed = max(MIN_CORNER_SPEED, adaptive_speed)
 
     # ----- 6. Apply to Wheels with Safety Clamps -----
-    # Using a slightly negative minimum allows the inner wheel to reverse for tight pivots
-    MOTOR_LIMIT_MAX = 13.0 # MUST match or exceed MAX_SPEED (Increased from 12.0)
-    MOTOR_LIMIT_MIN = -2.0 # Allowing slightly more reverse power for faster pivots
+    MOTOR_LIMIT_MAX = 13.0 
+    MOTOR_LIMIT_MIN = -2.0 
     
     left_speed = adaptive_speed + turn
     right_speed = adaptive_speed - turn
 
-    # Clamp the final outputs to prevent the simulator from silently freezing!
+    # Clamp the final outputs
     left_speed = max(MOTOR_LIMIT_MIN, min(left_speed, MOTOR_LIMIT_MAX))
     right_speed = max(MOTOR_LIMIT_MIN, min(right_speed, MOTOR_LIMIT_MAX))
 
