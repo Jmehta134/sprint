@@ -1,0 +1,136 @@
+-- Complete Lua Customization Script for CoppeliaSim
+
+function sysCall_init()
+    -- ==========================================
+    -- CONFIGURATION VARIABLES (Edit these!)
+    -- ==========================================
+    maxEpisodes = 100        -- Total number of episodes to run
+    episodeDuration = 4.0    -- Maximum time (in seconds) per episode
+    
+    -- Put the EXACT absolute paths to your 5 sensors here. 
+    -- CoppeliaSim is case-sensitive!
+    sensorPaths = {
+        '/LineTracer/LeftcornerSensor',
+        '/LineTracer/LeftSensor',
+        '/LineTracer/MiddleSensor',
+        '/LineTracer/RightSensor',
+        '/LineTracer/RightcornerSensor'
+    }
+    -- ==========================================
+
+    episodeCount = 1
+    wantRunning = true
+    uniformTimer = 0.0
+    episodeTimer = 0.0       
+    stopTime = nil           -- Using real-world time for accurate delays
+    lastState = -1           -- Used to track engine state changes
+    
+    sensors = {}
+    
+    for i, path in ipairs(sensorPaths) do
+        local status, handle = pcall(sim.getObject, path)
+        if status and handle ~= -1 then
+            table.insert(sensors, handle)
+        else
+            print("Warning: Could not find sensor at path '" .. path .. "'.")
+        end
+    end
+    
+    if #sensors == 0 then
+        print("CRITICAL ERROR: No sensors found! Auto-reset disabled.")
+        wantRunning = false
+    else
+        print("Auto-reset script loaded successfully. Found " .. #sensors .. " sensors.")
+    end
+end
+
+function sysCall_actuation()
+    if not wantRunning then return end
+    if #sensors == 0 then return end
+    
+    local dt = sim.getSimulationTimeStep()
+    episodeTimer = episodeTimer + dt
+    
+    -- Condition 1: Time limit
+    if episodeTimer >= episodeDuration then
+        print("Episode " .. episodeCount .. " finished (Time limit: " .. episodeDuration .. "s). Stopping...")
+        sim.stopSimulation()
+        wantRunning = false
+        uniformTimer = 0.0
+        return
+    end
+    
+    -- Condition 2: Early stopping (off-track)
+    local minVal = 9999
+    local maxVal = -9999
+    local allValid = true
+    
+    for i, handle in ipairs(sensors) do
+        local result, data = sim.readVisionSensor(handle)
+        if result >= 0 and data then
+            local val = data[11]
+            if val < minVal then minVal = val end
+            if val > maxVal then maxVal = val end
+        else
+            allValid = false
+        end
+    end
+    
+    if allValid then
+        if (maxVal - minVal) <= 0.1 then
+            uniformTimer = uniformTimer + dt
+            if uniformTimer >= 1.0 then
+                print("Episode " .. episodeCount .. " stopped early (Sensors uniform / off-track). Stopping...")
+                sim.stopSimulation()
+                wantRunning = false
+                uniformTimer = 0.0
+            end
+        else
+            uniformTimer = 0.0
+        end
+    end
+end
+
+function sysCall_nonSimulation()
+    -- This runs continuously in the background when the simulation is stopped
+    if not wantRunning then
+        
+        local state = sim.getSimulationState()
+        
+        -- Print a message every time the simulator changes state
+        if state ~= lastState then
+            print("Engine State Changed: " .. state .. " (0 = Fully Stopped)")
+            lastState = state
+        end
+        
+        -- Check if CoppeliaSim has fully reached the 'stopped' state
+        if state == sim.simulation_stopped then
+            
+            -- Capture the exact moment it stopped
+            if stopTime == nil then
+                print("Engine has fully stopped. Waiting 1 second to reset physics...")
+                stopTime = sim.getSystemTime()
+            end
+            
+            -- Wait for exactly 1.0 second of real-world time
+            if (sim.getSystemTime() - stopTime) > 1.0 then
+                if episodeCount >= maxEpisodes then
+                    print("=======================================")
+                    print("Training Complete! Reached max episodes.")
+                    print("=======================================")
+                    wantRunning = true -- Stop checking
+                    return
+                end
+                
+                episodeCount = episodeCount + 1
+                episodeTimer = 0.0 
+                stopTime = nil     
+                lastState = -1
+                
+                print(">>> Attempting to START Episode " .. episodeCount .. " <<<")
+                sim.startSimulation()
+                wantRunning = true
+            end
+        end
+    end
+end

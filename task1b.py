@@ -37,21 +37,13 @@ SENSOR_ORDER = ['left_corner', 'left', 'middle', 'right', 'right_corner']
 
 # Action set: index -> (left_speed, right_speed). 
 ACTIONS = [
-
-(2.0,2.0),    # straight
-
-(1.7,2.3),    # slight left
-
-(2.3,1.7),    # slight right
-
-(1.3,2.7),    # hard left
-
-(2.7,1.3),    # hard right
-
-(-1.5,1.5),    # hardest left
-
-(1.5,-1.5),    # hardest right
-
+    (2.0,2.0),     # straight
+    (1.7,2.3),     # slight left
+    (2.3,1.7),     # slight right
+    (1.3,2.7),     # hard left
+    (2.7,1.3),     # hard right
+    (-1.5,1.5),    # hardest left
+    (1.5,-1.5),    # hardest right
 ]
 
 # Hyper parameter for tuning
@@ -68,90 +60,40 @@ Q_TABLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_table
 #  You may also add your own helper functions in this section.
 # =============================================================================
 def get_state(sensors):
-
     threshold = 0.4
-
     state = []
-
     for sensor in SENSOR_ORDER:
-
         if sensors[sensor] > threshold:
-
             state.append(1)
-
         else:
-
             state.append(0)
-
     return tuple(state)
 
 def get_reward(sensors,state):
-
     if state == (0,0,1,0,0):
-
         return 10
-
-    elif state in [
-
-        (0,1,1,0,0),
-
-        (0,0,1,1,0)
-
-    ]:
-
+    elif state in [(0,1,1,0,0), (0,0,1,1,0)]:
         return 7
-
-    elif state in [
-
-        (0,1,0,0,0),
-
-        (0,0,0,1,0)
-
-    ]:
-
+    elif state in [(0,1,0,0,0), (0,0,0,1,0)]:
         return 4
-
-    elif state in [
-
-        (1,1,0,0,0),
-
-        (0,0,0,1,1)
-
-    ]:
-
+    elif state in [(1,1,0,0,0), (0,0,0,1,1)]:
         return 2
-
     elif state == (0,0,0,0,0):
-
         return -30
-
     else:
-
         return -5
 
 
 def choose_action(agent,state,training):
-
     agent._ensure(state)
-
     if training:
-
         if random.random() < agent.epsilon:
-
             if state == (0,0,0,0,0):
-
                 return random.choice([3,4])
-
-            return random.randint(
-                0,
-                agent.n_actions-1
-            )
+            return random.randint(0, agent.n_actions-1)
 
     q_values = agent.q_table[state]
-
-    return q_values.index(
-        max(q_values)
-    )
+    return q_values.index(max(q_values))
 
 # =============================================================================
 #  Q-learning agent (Don't Edit this)
@@ -207,28 +149,32 @@ def run(mode):
     client.connect()
     print(f"Connected to bridge_task1b. Mode = {mode}. (Ctrl+C to stop)")
 
-    last_sensors = None
-    prev_state = None
-    prev_action = None
-    reward = 0.0
-
     try:
+        print("\nPython script running continuously. Waiting for valid sensor data...")
+        prev_state = None
+        prev_action = None
+        step_count = 0
+
         while True:
             sensors = client.receive_sensor_data()
-            print(f"Sensors: {sensors} ")
-            if sensors is not None:
-                last_sensors = sensors
-            if last_sensors is None:
-                time.sleep(0.02)
+            
+            # Check for stop or pause (None or all zeros)
+            if sensors is None or all(v == 0.0 for v in sensors.values()):
+                # Reset previous state so we don't carry over Q-updates between episodes!
+                prev_state = None
+                prev_action = None
+                time.sleep(0.05)
                 continue
 
-            state = get_state(last_sensors)
-            reward = get_reward(last_sensors, state)
+            state = get_state(sensors)
+            reward = get_reward(sensors, state)
+            
             if training and prev_state is not None:
                 agent.update(prev_state, prev_action, reward, state)
 
             action = choose_action(agent, state, training)
             left, right = ACTIONS[action]
+            
             client.send_motor_command(
                 left, right,
                 state=list(state),  
@@ -237,7 +183,16 @@ def run(mode):
             )
 
             prev_state, prev_action = state, action
+            
+            # Save periodically (e.g., every 1000 steps = ~50 seconds) to avoid lagging the simulation
+            if training:
+                step_count += 1
+                if step_count % 1000 == 0:
+                    print(f"\n[Auto-Save] Saving Q-Table at step {step_count}...")
+                    agent.save()
+
             time.sleep(0.05)   # ~20 Hz
+                
     except KeyboardInterrupt:
         print("\nStopping...")
     finally:
@@ -249,14 +204,13 @@ def run(mode):
         if training:
             agent.save()   # persist what was learned
 
-
 def main():
     parser = argparse.ArgumentParser(description="Task 1B - Q-Learning")
     parser.add_argument("--mode", choices=["train", "test"], default="train",
                         help="train: explore + update Q-table; test: greedy, no update")
     args = parser.parse_args()
+    
     run(args.mode)
-
 
 if __name__ == "__main__":
     main()
