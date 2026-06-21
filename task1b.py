@@ -42,8 +42,8 @@ ACTIONS = [
     (2.3,1.7),     # slight right
     (1.3,2.7),     # hard left
     (2.7,1.3),     # hard right
-    (-1.5,1.5),    # hardest left
-    (1.5,-1.5),    # hardest right
+    (0.5,2.5),    # hardest left
+    (2.5,0.5),    # hardest right
 ]
 
 # Hyper parameter for tuning
@@ -59,14 +59,36 @@ Q_TABLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_table
 #  TODO (participants): implement get_state(), get_reward() and choose_action().
 #  You may also add your own helper functions in this section.
 # =============================================================================
+BACKGROUND_IS_HIGH = False
+
 def get_state(sensors):
-    threshold = 0.4
+    global BACKGROUND_IS_HIGH
+    
+    # Check outermost sensors to dynamically switch the background assumption
+    left_corner = sensors['left_corner']
+    right_corner = sensors['right_corner']
+    
+    if left_corner < 0.4 and right_corner < 0.4:
+        BACKGROUND_IS_HIGH = False
+    elif left_corner > 0.6 and right_corner > 0.6:
+        BACKGROUND_IS_HIGH = True
+        
     state = []
     for sensor in SENSOR_ORDER:
-        if sensors[sensor] > threshold:
-            state.append(1)
+        val = sensors[sensor]
+        if BACKGROUND_IS_HIGH:
+            # Background is light (high), so the line must be dark (low)
+            if val < 0.5:
+                state.append(1) # 1 = On the line
+            else:
+                state.append(0) # 0 = Off the line
         else:
-            state.append(0)
+            # Background is dark (low), so the line must be light (high)
+            if val > 0.5:
+                state.append(1) # 1 = On the line
+            else:
+                state.append(0) # 0 = Off the line
+                
     return tuple(state)
 
 def get_reward(sensors,state):
