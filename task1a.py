@@ -54,11 +54,11 @@ def control_loop(sensors):
     Kd = 0.5  
     
     weights = {
-        'left_corner': -2.0,
-        'left': -1.3,
+        'left_corner': -2.5,
+        'left': -1.6,
         'middle': 0.0,
-        'right': 1.3,
-        'right_corner': 2.0
+        'right': 1.6,
+        'right_corner': 2.5
     }
 
     # ----- 2. Process Sensors -----
@@ -87,7 +87,7 @@ def control_loop(sensors):
         # 2. Assume a threshold error, continuously increasing.
         # Start at 1.5 (stronger than the outer sensor weight of 1.0)
         BASE_THRESHOLD = 1.5 
-        GROWTH_PER_CYCLE = 0.01  
+        GROWTH_PER_CYCLE = 0.02  
         
         # Inject the growing error directly into the PID flow
         error = direction * (BASE_THRESHOLD + (GROWTH_PER_CYCLE * control_loop.lost_cycles))
@@ -132,8 +132,8 @@ def control_loop(sensors):
     MAX_SPEED = 14.0   
     MIN_CORNER_SPEED = 2.5  
     
-    K_brake_error = 8.0 
-    K_brake_diff = 5.0  
+    K_brake_error = 10.0 
+    K_brake_diff = 8.0  
     
     # Restored the adaptive speed calculation so it doesn't throw a reference error
     adaptive_speed = MAX_SPEED - (K_brake_error * abs(error)) - (K_brake_diff * abs(D))
@@ -142,7 +142,7 @@ def control_loop(sensors):
     adaptive_speed = max(MIN_CORNER_SPEED, adaptive_speed)
 
     # ----- 6. Apply to Wheels with Safety Clamps -----
-    MOTOR_LIMIT_MAX = 13.0 
+    MOTOR_LIMIT_MAX = 14.0 
     MOTOR_LIMIT_MIN = -2.0 
     
     left_speed = adaptive_speed + turn
@@ -165,7 +165,6 @@ def main():
             sensors = client.receive_sensor_data()
 
             if sensors is  None:
-                time.sleep(0.01)
                 continue
             
             left, right = control_loop (sensors)
