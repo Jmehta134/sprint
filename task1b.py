@@ -37,19 +37,29 @@ SENSOR_ORDER = ['left_corner', 'left', 'middle', 'right', 'right_corner']
 
 # Action set: index -> (left_speed, right_speed). 
 ACTIONS = [
-    (2.0,2.0),     # straight
-    (1.7,2.3),     # slight left
-    (2.3,1.7),     # slight right
-    (1.3,2.7),     # hard left
-    (2.7,1.3),     # hard right
-    (0.5,2.5),    # hardest left
-    (2.5,0.5),    # hardest right
+    (4.0,4.0),     # straight
+    (3.4,4.6),     # slight left
+    (4.6,3.4),     # slight right
+    (2.6,5.4),     # hard left
+    (5.4,2.6),     # hard right
+    (1.0,5.0),    # hardest left
+    (5.0,1.0),    # hardest right
 ]
+# ACTIONS = [
+#     (5.0, 5.0),     # straight
+#     (4.25, 5.75),   # slight left
+#     (5.75, 4.25),   # slight right
+#     (3.25, 6.75),   # hard left
+#     (6.75, 3.25),   # hard right
+#     (1.25, 6.25),   # hardest left
+#     (6.25, 1.25),   # hardest right
+# ]
+
 
 # Hyper parameter for tuning
 ALPHA = 0.2
-GAMMA = 0.9
-EPSILON = 0.2
+GAMMA = 0.95
+EPSILON = 0.15
 
 # Saved next to this script, so it doesn't depend on the launch directory.
 Q_TABLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_table.pkl")
@@ -59,12 +69,14 @@ Q_TABLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_table
 #  TODO (participants): implement get_state(), get_reward() and choose_action().
 #  You may also add your own helper functions in this section.
 # =============================================================================
+import random
+
 BACKGROUND_IS_HIGH = False
+LAST_KNOWN_LINE = (0, 0, 1, 0, 0) 
 
 def get_state(sensors):
-    global BACKGROUND_IS_HIGH
+    global BACKGROUND_IS_HIGH, LAST_KNOWN_LINE
     
-    # Check outermost sensors to dynamically switch the background assumption
     left_corner = sensors['left_corner']
     right_corner = sensors['right_corner']
     
@@ -73,46 +85,61 @@ def get_state(sensors):
     elif left_corner > 0.6 and right_corner > 0.6:
         BACKGROUND_IS_HIGH = True
         
-    state = []
+    current_reading = []
     for sensor in SENSOR_ORDER:
         val = sensors[sensor]
         if BACKGROUND_IS_HIGH:
-            # Background is light (high), so the line must be dark (low)
-            if val < 0.5:
-                state.append(1) # 1 = On the line
-            else:
-                state.append(0) # 0 = Off the line
+            current_reading.append(1 if val < 0.5 else 0)
         else:
-            # Background is dark (low), so the line must be light (high)
-            if val > 0.5:
-                state.append(1) # 1 = On the line
-            else:
-                state.append(0) # 0 = Off the line
+            current_reading.append(1 if val > 0.5 else 0)
                 
-    return tuple(state)
+    current_tuple = tuple(current_reading)
+    
+    # --- THE MAGIC HAPPENS HERE ---
+    if current_tuple == (0, 0, 0, 0, 0):
+        # We are lost! Append the memory to the state so the Q-table knows how to recover.
+        return ("LOST", LAST_KNOWN_LINE)
+    else:
+        # We are on the line. Update memory and just return the current 1D state.
+        LAST_KNOWN_LINE = current_tuple
+        return current_tuple
 
-def get_reward(sensors,state):
-    if state == (0,0,1,0,0):
-        return 10
-    elif state in [(0,1,1,0,0), (0,0,1,1,0)]:
-        return 7
-    elif state in [(0,1,0,0,0), (0,0,0,1,0)]:
-        return 4
-    elif state in [(1,1,0,0,0), (0,0,0,1,1)]:
-        return 2
-    elif state == (0,0,0,0,0):
+def get_reward(sensors, state):
+    # Check if the state is our special 2D "LOST" state
+    if state[0] == "LOST":
         return -30
+        
+    # Otherwise, it is a standard 1D state tuple
+    if state == (0, 0, 1, 0, 0):
+        return 10
+    elif state in [(0, 1, 1, 0, 0), (0, 0, 1, 1, 0)]:
+        return 7
+    elif state in [(0, 1, 0, 0, 0), (0, 0, 0, 1, 0)]:
+        return 4
+    elif state in [(1, 1, 0, 0, 0), (0, 0, 0, 1, 1)]:
+        return 2
     else:
         return -5
 
-
-def choose_action(agent,state,training):
+def choose_action(agent, state, training):
     agent._ensure(state)
+    
     if training:
         if random.random() < agent.epsilon:
-            if state == (0,0,0,0,0):
-                return random.choice([3,4])
-            return random.randint(0, agent.n_actions-1)
+            # Smart Exploration when lost
+            if state[0] == "LOST":
+                last_known = state[1]
+                # If we fell off to the right (saw line on left sensors previously)
+                if last_known[0] == 1 or last_known[1] == 1:
+                    return 3 # Force a hard left turn
+                # If we fell off to the left (saw line on right sensors previously)
+                elif last_known[3] == 1 or last_known[4] == 1:
+                    return 4 # Force a hard right turn
+                else:
+                    return random.choice([3, 4])
+            
+            # Normal random exploration if we are on the line
+            return random.randint(0, agent.n_actions - 1)
 
     q_values = agent.q_table[state]
     return q_values.index(max(q_values))
