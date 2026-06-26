@@ -45,15 +45,7 @@ ACTIONS = [
     (1.0,5.0),    # hardest left
     (5.0,1.0),    # hardest right
 ]
-# ACTIONS = [
-#     (5.0, 5.0),     # straight
-#     (4.25, 5.75),   # slight left
-#     (5.75, 4.25),   # slight right
-#     (3.25, 6.75),   # hard left
-#     (6.75, 3.25),   # hard right
-#     (1.25, 6.25),   # hardest left
-#     (6.25, 1.25),   # hardest right
-# ]
+
 
 
 # Hyper parameter for tuning
