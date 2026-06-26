@@ -42,27 +42,55 @@ ACTIONS = [
     (4.6,3.4),     # slight right
     (2.6,5.4),     # hard left
     (5.4,2.6),     # hard right
-    (1.0,5.0),    # hardest left
-    (5.0,1.0),    # hardest right
+    (1.0,5.0),     # hardest left
+    (5.0,1.0),     # hardest right
 ]
 
-
+# --- NEW SPEED ACTIONS & LPF SETTINGS ---
+SPEED_MULTIPLIERS = [0.8, 1.2, 1.6] # Slow, Medium, Fast
+EMA_ALPHA = 0.6                     # Low Pass Filter strength (0.0 to 1.0). Lower is smoother.
 
 # Hyper parameter for tuning
 ALPHA = 0.2
 GAMMA = 0.95
-EPSILON = 0.15
+EPSILON = 0.2
 
 # Saved next to this script, so it doesn't depend on the launch directory.
 Q_TABLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_table.pkl")
 
 
 # =============================================================================
-#  TODO (participants): implement get_state(), get_reward() and choose_action().
-#  You may also add your own helper functions in this section.
+#  Custom Save/Load Wrappers (Preserves the QLearningAgent class untouched)
 # =============================================================================
-import random
+def load_dual_agents(steering_agent, speed_agent, path):
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            loaded_data = pickle.load(f)
+            
+        if isinstance(loaded_data, dict) and "steering" in loaded_data:
+            steering_agent.q_table = loaded_data["steering"]
+            speed_agent.q_table = loaded_data.get("speed", {})
+            print(f"Loaded Dual Q-tables from {path}")
+        else:
+            print("Old format detected! Migrating steering data. Speed agent starting fresh.")
+            steering_agent.q_table = loaded_data
+            speed_agent.q_table = {}
+        return True
+    return False
 
+def save_dual_agents(steering_agent, speed_agent, path):
+    data_to_save = {
+        "steering": steering_agent.q_table,
+        "speed": speed_agent.q_table
+    }
+    with open(path, "wb") as f:
+        pickle.dump(data_to_save, f)
+    print(f"\nSaved Dual Q-tables (Steering: {len(steering_agent.q_table)}, Speed: {len(speed_agent.q_table)}) to {path}")
+
+
+# =============================================================================
+#  Sensor Logic & Steering Agent Implementations
+# =============================================================================
 BACKGROUND_IS_HIGH = False
 LAST_KNOWN_LINE = (0, 0, 1, 0, 0) 
 
@@ -87,54 +115,75 @@ def get_state(sensors):
                 
     current_tuple = tuple(current_reading)
     
-    # --- THE MAGIC HAPPENS HERE ---
     if current_tuple == (0, 0, 0, 0, 0):
-        # We are lost! Append the memory to the state so the Q-table knows how to recover.
         return ("LOST", LAST_KNOWN_LINE)
     else:
-        # We are on the line. Update memory and just return the current 1D state.
         LAST_KNOWN_LINE = current_tuple
         return current_tuple
 
-def get_reward(sensors, state):
-    # Check if the state is our special 2D "LOST" state
-    if state[0] == "LOST":
-        return -30
-        
-    # Otherwise, it is a standard 1D state tuple
-    if state == (0, 0, 1, 0, 0):
-        return 10
-    elif state in [(0, 1, 1, 0, 0), (0, 0, 1, 1, 0)]:
-        return 7
-    elif state in [(0, 1, 0, 0, 0), (0, 0, 0, 1, 0)]:
-        return 4
-    elif state in [(1, 1, 0, 0, 0), (0, 0, 0, 1, 1)]:
-        return 2
-    else:
-        return -5
-
 def choose_action(agent, state, training):
     agent._ensure(state)
-    
     if training:
         if random.random() < agent.epsilon:
-            # Smart Exploration when lost
             if state[0] == "LOST":
                 last_known = state[1]
-                # If we fell off to the right (saw line on left sensors previously)
-                if last_known[0] == 1 or last_known[1] == 1:
-                    return 3 # Force a hard left turn
-                # If we fell off to the left (saw line on right sensors previously)
-                elif last_known[3] == 1 or last_known[4] == 1:
-                    return 4 # Force a hard right turn
-                else:
-                    return random.choice([3, 4])
-            
-            # Normal random exploration if we are on the line
+                if last_known[0] == 1 or last_known[1] == 1: return 3
+                elif last_known[3] == 1 or last_known[4] == 1: return 4
+                else: return random.choice([3, 4])
             return random.randint(0, agent.n_actions - 1)
 
     q_values = agent.q_table[state]
     return q_values.index(max(q_values))
+
+
+# =============================================================================
+#  Speed Agent Implementations
+# =============================================================================
+def get_speed_state(steering_state):
+    """3-State system to prevent bang-bang oscillation."""
+    if steering_state[0] == "LOST":
+        return 2  # Danger / Lost
+    # Safely unpacking standard 1D tuple
+    elif steering_state in [(0, 0, 1, 0, 0), (0, 1, 1, 0, 0), (0, 0, 1, 1, 0), (0, 1, 1, 1, 0)]:
+        return 0  # Straight & Safe
+    else:
+        return 1  # Curve / Drifting
+
+def get_speed_reward(speed_state, speed_action):
+    """
+    speed_state: 0 (Straight), 1 (Curve), 2 (Lost/Danger)
+    speed_action: 0 (Slow), 1 (Medium), 2 (Fast)
+    """
+    
+    # 1. Survival & Recovery Rules (State 2: LOST)
+    if speed_state == 2: 
+        if speed_action == 2: return -40  # Death wish. Slamming gas while blind.
+        if speed_action == 1: return -15  # Still too fast for safe recovery.
+        if speed_action == 0: return 5    # PERFECT. Slamming the brakes to let the steering agent recover!
+        
+    # 2. Straightaway Rules (Force it to blast the throttle)
+    if speed_state == 0:
+        if speed_action == 2: return 20   # Maximum reward for max speed
+        if speed_action == 1: return 2    # Mediocre reward
+        if speed_action == 0: return -15  # HEAVY PENALTY for driving slow on a straight
+        
+    # 3. Cornering Rules (Force it to maintain momentum safely)
+    if speed_state == 1:
+        if speed_action == 2: return -15  # Penalty for taking a curve too fast
+        if speed_action == 1: return 15   # Massive reward for taking curves at medium speed
+        if speed_action == 0: return -5   # Penalty for braking too hard into a gentle curve
+        
+    return 0
+
+
+def choose_speed_action(agent, state, training):
+    agent._ensure(state)
+    if training and random.random() < agent.epsilon:
+        return random.randint(0, agent.n_actions - 1)
+    
+    q_values = agent.q_table[state]
+    return q_values.index(max(q_values))
+
 
 # =============================================================================
 #  Q-learning agent (Don't Edit this)
@@ -180,8 +229,13 @@ class QLearningAgent:
 def run(mode):
     training = (mode == "train")
 
-    agent = QLearningAgent(len(ACTIONS), ALPHA, GAMMA, EPSILON, Q_TABLE_PATH)
-    loaded = agent.load()
+    # Instantiate both brains
+    steering_agent = QLearningAgent(len(ACTIONS), ALPHA, GAMMA, EPSILON, Q_TABLE_PATH)
+    speed_agent = QLearningAgent(len(SPEED_MULTIPLIERS), ALPHA, GAMMA, EPSILON, Q_TABLE_PATH)
+    
+    # Custom loader
+    loaded = load_dual_agents(steering_agent, speed_agent, Q_TABLE_PATH)
+    
     if not training and not loaded:
         print("ERROR: test mode needs a trained Q-table. Run --mode train first.")
         return
@@ -192,45 +246,64 @@ def run(mode):
 
     try:
         print("\nPython script running continuously. Waiting for valid sensor data...")
-        prev_state = None
-        prev_action = None
+        prev_speed_state = None
+        prev_speed_action = None
+        
+        # State tracking for the Low Pass Filter
+        current_left_pwm = 0.0
+        current_right_pwm = 0.0
+        
         step_count = 0
 
         while True:
             sensors = client.receive_sensor_data()
             
-            # Check for stop or pause (None or all zeros)
             if sensors is None or all(v == 0.0 for v in sensors.values()):
-                # Reset previous state so we don't carry over Q-updates between episodes!
-                prev_state = None
-                prev_action = None
+                prev_speed_state = None
+                prev_speed_action = None
                 time.sleep(0.05)
                 continue
 
-            state = get_state(sensors)
-            reward = get_reward(sensors, state)
+            # 1. State Mapping
+            steer_state = get_state(sensors)
+            speed_state = get_speed_state(steer_state)
             
-            if training and prev_state is not None:
-                agent.update(prev_state, prev_action, reward, state)
+            # 2. Get rewards (Only tracking speed reward now)
+            reward = get_speed_reward(speed_state, prev_speed_action if prev_speed_action is not None else 0)
+            
+            # 3. Update ONLY the Speed Agent
+            if training and prev_speed_state is not None:
+                speed_agent.update(prev_speed_state, prev_speed_action, reward, speed_state)
 
-            action = choose_action(agent, state, training)
-            left, right = ACTIONS[action]
+            # 4. Choose Actions (Steering is forced to False so it strictly exploits its old table)
+            steer_action = choose_action(steering_agent, steer_state, training=False)
+            speed_action = choose_speed_action(speed_agent, speed_state, training)
             
+            # 5. Apply Speed Multiplier to base steering
+            base_left, base_right = ACTIONS[steer_action]
+            multiplier = SPEED_MULTIPLIERS[speed_action]
+            target_left = base_left * multiplier
+            target_right = base_right * multiplier
+            
+            # 6. Apply the Exponential Moving Average (Low Pass Filter)
+            current_left_pwm = (EMA_ALPHA * target_left) + ((1 - EMA_ALPHA) * current_left_pwm)
+            current_right_pwm = (EMA_ALPHA * target_right) + ((1 - EMA_ALPHA) * current_right_pwm)
+            
+            # 7. Bridge communication (Passing raw sensor list to avoid json crash with tuple/string mix)
+            raw_sensor_list = [1 if sensors[s]>0.5 else 0 for s in SENSOR_ORDER]
             client.send_motor_command(
-                left, right,
-                state=list(state),  
+                current_left_pwm, current_right_pwm,
+                state=raw_sensor_list,  
                 reward=reward,
-                action=action,
+                action=speed_action,
             )
 
-            prev_state, prev_action = state, action
+            prev_speed_state, prev_speed_action = speed_state, speed_action
             
-            # Save periodically (e.g., every 1000 steps = ~50 seconds) to avoid lagging the simulation
             if training:
                 step_count += 1
                 if step_count % 1000 == 0:
-                    print(f"\n[Auto-Save] Saving Q-Table at step {step_count}...")
-                    agent.save()
+                    save_dual_agents(steering_agent, speed_agent, Q_TABLE_PATH)
 
             time.sleep(0.05)   # ~20 Hz
                 
@@ -238,12 +311,12 @@ def run(mode):
         print("\nStopping...")
     finally:
         try:
-            client.send_motor_command(0.0, 0.0, state=0, reward=0.0, action=0)
+            client.send_motor_command(0.0, 0.0, state=[0,0,0,0,0], reward=0.0, action=0)
         except Exception:
             pass
         client.close()
         if training:
-            agent.save()   # persist what was learned
+            save_dual_agents(steering_agent, speed_agent, Q_TABLE_PATH)
 
 def main():
     parser = argparse.ArgumentParser(description="Task 1B - Q-Learning")
