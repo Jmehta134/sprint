@@ -20,7 +20,7 @@ Team ID: [ 782 ]
 """
 
 import time
-
+import random
 from connector_task1a import CoppeliaClient
 
 # The five line sensors, ordered left -> right across the robot.
@@ -38,6 +38,8 @@ def control_loop(sensors):
         control_loop.follow_white_line = True
         control_loop.lost_time = None
         control_loop.lost_cycles = 0  
+        control_loop.turn_history = []
+        control_loop.speed_history = []
         
     left_ext = sensors['left_corner']
     right_ext = sensors['right_corner']
@@ -51,14 +53,14 @@ def control_loop(sensors):
     # ----- 1. Configuration & Tuning Parameters -----
     Kp = 0.8  
     Ki = 0.0
-    Kd = 0.3  
+    Kd = 0.5  
     
     weights = {
-        'left_corner': -2.5,
-        'left': -1.6,
+        'left_corner': -2.0,
+        'left': -1.3,
         'middle': 0.0,
-        'right': 1.6,
-        'right_corner': 2.5
+        'right': 1.3,
+        'right_corner': 2.0
     }
 
     # ----- 2. Process Sensors -----
@@ -87,7 +89,7 @@ def control_loop(sensors):
         # 2. Assume a threshold error, continuously increasing.
         # Start at 1.5 (stronger than the outer sensor weight of 1.0)
         BASE_THRESHOLD = 1.5 
-        GROWTH_PER_CYCLE = 0.02  #inc
+        GROWTH_PER_CYCLE = 0.01  
         
         # Inject the growing error directly into the PID flow
         error = direction * (BASE_THRESHOLD + (GROWTH_PER_CYCLE * control_loop.lost_cycles))
@@ -113,7 +115,7 @@ def control_loop(sensors):
             raw_error = control_loop.prev_error  
         
         # Low-Pass Filter (LPF) applied to the error
-        alpha = 0.8  
+        alpha = 0.6  
         error = (alpha * raw_error) + ((1.0 - alpha) * control_loop.lpf_error)
         control_loop.lpf_error = error
 
@@ -129,17 +131,44 @@ def control_loop(sensors):
     control_loop.prev_error = error
 
     # ----- 5. Adaptive Speed Logic -----
-    MAX_SPEED = 17.5#17.5#16.7 109 #16.5 112 #16.2   
+    MAX_SPEED = 12.0   
     MIN_CORNER_SPEED = 2.5  
     
-    K_brake_error = 10.5#10.5  #for errors ,at curve inc this
-    K_brake_diff =9.9#9.9#9.9#9.6#9.5 #9.0     #at corners ,at turns inc this
+    K_brake_error = 8.0 
+    K_brake_diff = 5.0  
     
     # Restored the adaptive speed calculation so it doesn't throw a reference error
     adaptive_speed = MAX_SPEED - (K_brake_error * abs(error)) - (K_brake_diff * abs(D))
     
     # Don't let the base speed drop below your safe cornering speed
     adaptive_speed = max(MIN_CORNER_SPEED, adaptive_speed)
+
+    # ----- 5.5 GREEDY TURN LOGIC (Simplified) -----
+    HISTORY_LEN = 10
+    GREEDY_SPEED = 14.0
+    GREEDY_PROBABILITY = 0.05  # 1% chance to override the current cycle
+
+    # 1. Record the RAW PID outputs (before any greedy overrides)
+    control_loop.turn_history.append(turn)
+    control_loop.speed_history.append(adaptive_speed)
+
+    # 2. Maintain buffer size
+    if len(control_loop.turn_history) > HISTORY_LEN:
+        control_loop.turn_history.pop(0)
+        control_loop.speed_history.pop(0)
+
+    # 3. Always apply the mean turn ratio once the buffer is full
+    if random.random() < GREEDY_PROBABILITY and abs(error) < 0.8 and abs(error) > 0.3 :  # Only consider greedy override when the error is small
+        if len(control_loop.turn_history) == HISTORY_LEN :
+            mean_turn = sum(control_loop.turn_history) / HISTORY_LEN
+            mean_speed = sum(control_loop.speed_history) / HISTORY_LEN
+            
+            # Calculate the ratio
+            turn_ratio = mean_turn / mean_speed
+            
+            # Override the current cycle
+            adaptive_speed = GREEDY_SPEED
+            turn = GREEDY_SPEED * turn_ratio 
 
     # ----- 6. Apply to Wheels with Safety Clamps -----
     MOTOR_LIMIT_MAX = 14.0 
